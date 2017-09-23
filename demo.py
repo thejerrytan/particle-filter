@@ -1,6 +1,7 @@
 from Tkinter import *
 from scipy import stats
 import numpy as np
+import random, time
 # import matplotlib.pyplot as plt
 
 # Particle filter algorithm - finding position of robot in a 2 dimensional space using noisy sensors
@@ -54,16 +55,20 @@ import numpy as np
 CANVAS_WIDTH = 80
 CANVAS_HEIGHT = 80
 PARTICLE_RADIUS = 2
-NUM_OF_PARTICLES = 200
+NUM_OF_PARTICLES = 2000
 ROBOT_RADIUS = 5
-ROBOT_INIT_POS = (CANVAS_HEIGHT/2, CANVAS_WIDTH/2)
+ROBOT_POS = (CANVAS_HEIGHT/2, CANVAS_WIDTH/2)
 SAMPLE_SIZE = 50
+SENSOR_SIGMA = 2
+SENSOR_COVARIANCE = np.array([[SENSOR_SIGMA, 0], [0, SENSOR_SIGMA]])
+SENSOR_MEAN = np.array([0,0])
 
 # Global data structures
 INIT_STATE_TABLE = None
 TRANSITION_TABLE = None
 OBS_ERROR_TABLE  = None
 PARTICLE_LOCATION = {}
+PARTICLE_WEIGHT = {}
 
 ERROR_TOLERANCE = 0.00001
 
@@ -110,9 +115,10 @@ def init_transition_model(model, **vargs):
 				TRANSITION_TABLE[x,y,:,:] = rv.pdf(coords)
 				norm = np.sum(TRANSITION_TABLE[x,y])
 				TRANSITION_TABLE[x,y] /= norm
+				TRANSITION_TABLE[x,y] = np.cumsum(TRANSITION_TABLE[x,y]).reshape((CANVAS_HEIGHT, CANVAS_WIDTH))
 				# plt.contourf(coords_x, coords_y, rv.pdf(coords))
 				# plt.show()
-				assert(abs(np.sum(TRANSITION_TABLE[x,y]) - 1.0) < ERROR_TOLERANCE)
+				# assert(abs(np.sum(TRANSITION_TABLE[x,y]) - 1.0) < ERROR_TOLERANCE)
 	elif model == "gaussian-with-drift":
 		raise Exception("Not implemented")
 	elif model == "stationary":
@@ -134,7 +140,7 @@ def init_obs_given_state(distribution, **vargs):
 		OBS_ERROR_TABLE = np.zeros((CANVAS_HEIGHT, CANVAS_WIDTH, CANVAS_HEIGHT, CANVAS_WIDTH))
 		if cov is None:
 			# Default
-			cov = np.array([[2,0],[0,2]])
+			cov = np.array([[SENSOR_SIGMA,0],[0,SENSOR_SIGMA]])
 		coords_x, coords_y = np.mgrid[0:CANVAS_HEIGHT, 0:CANVAS_WIDTH]
 		coords = np.dstack((coords_x, coords_y))
 		for x in range(OBS_ERROR_TABLE.shape[0]):
@@ -162,22 +168,119 @@ def init_particles(distribution, **vargs):
 		samples = np.dstack((x_samples, y_samples))
 		for i in range(0, samples.shape[1]):
 			PARTICLE_LOCATION[i] = samples[0,i]
+			PARTICLE_WEIGHT[i] = 1.0
 	else:
 		raise Exception("Invalid distribution - must be one of gaussian, uniform")
 
 def elapse_time_step(distribution):
-	for (idx, coords) in PARTICLE_LOCATION.iteritems():
-		transition_model_given_x = TRANSITION_TABLE[coords[0], coords[1],:, :]
-		if distribution == "gaussian":
-			
+	global PARTICLE_LOCATION
+	if distribution == "gaussian":
+		for (idx, coords) in PARTICLE_LOCATION.iteritems():
+			transition_model_given_x = TRANSITION_TABLE[coords[0], coords[1],:, :]
+			rand = random.random()
+			# Roulette wheel sampling using cumulative sum
+			# for x in range(0, transition_model_given_x.shape[0]):
+			# 	for y in range(0, transition_model_given_x.shape[1]):
+			# 		if rand < transition_model_given_x[x,y]:
+			# 			# update location of particle
+			# 			PARTICLE_LOCATION[idx] = np.array([x, y])
+			# 			break
+			# 	else:
+			# 		continue
+			# 	break
+			# else:
+			# 	continue
+			# Another method is compute sample from closed form, TODO
+			raw_idx = binSearch(transition_model_given_x.flatten(), rand)
+			print(raw_idx)
+			x = raw_idx // CANVAS_HEIGHT
+			y = raw_idx % CANVAS_WIDTH
+			PARTICLE_LOCATION[idx] = np.array([x,y])
 
-	pass
+# Observation is np.array([x,y])
+def weight_particles(observation):
+	global PARTICLE_WEIGHT
+	total = 0
+	for (idx, location) in PARTICLE_LOCATION.iteritems():
+		actual_x = location[0]
+		actual_y = location[1]
+		prob = OBS_ERROR_TABLE[actual_x, actual_y, observation[0], observation[1]]
+		total += prob
+		PARTICLE_WEIGHT[idx] *= prob
+	# Normalize so sum of weights = 1
+	for idx, weight in PARTICLE_WEIGHT.iteritems():
+		PARTICLE_WEIGHT[idx] /= total
 
-def weight_particles():
-	pass
-
+# Sample particles with probability according to their weights
 def resample():
-	pass
+	# Stochastic Universal Sampling - O(N) 
+	# Build the wheel
+	total = sum(v for v in PARTICLE_WEIGHT.values())
+	wheel = [0]
+	for (idx, weight) in PARTICLE_WEIGHT.iteritems():
+		wheel.append(wheel[-1] + weight / total)
+		# Take this chance to reset the weight
+		PARTICLE_WEIGHT[idx] = 1.0
+	
+	rand = random.random()
+	step_size = 1.0 / NUM_OF_PARTICLES
+	new_particles = [] # Stores index of particle selected
+	new_particles.append(binSearch(wheel, rand))
+	while len(new_particles) < NUM_OF_PARTICLES: # Sampling with replacement
+		rand += step_size
+		if rand > 1:
+			rand %= 1
+		new_particles.append(binSearch(wheel, rand))
+
+	global PARTICLE_LOCATION
+	temp_particle_location = {}
+	count = 0
+	for i in new_particles:
+		prev_location = PARTICLE_LOCATION[i-1] # Because we added in interval 0 in wheel which increases all subsequent particle index by 1
+		temp_particle_location[count] = prev_location
+		count += 1
+	PARTICLE_LOCATION = temp_particle_location
+
+def binSearch(wheel, num):
+	if (len(wheel) == 1): return 1
+	mid = len(wheel)//2 - 1
+	try:
+		if wheel[mid] < num and num <= wheel[mid+1]:
+			return mid+1
+		elif wheel[mid] >= num:
+			return binSearch(wheel[0:mid+1], num)
+		else:
+			return binSearch(wheel[mid+1:], num)
+	except Exception as e:
+		# pass
+		print(wheel, num)
+
+# Moves robot according to predefined motion dynamics
+def move_robot():
+	global ROBOT_POS
+	transition_model_given_x = TRANSITION_TABLE[ROBOT_POS[0], ROBOT_POS[1],:, :]
+	rand = random.random()
+	for x in range(0, transition_model_given_x.shape[0]):
+		for y in range(0, transition_model_given_x.shape[1]):
+			if rand < transition_model_given_x[x,y]:
+				# update location of robot
+				ROBOT_POS = (x,y)
+				break
+		else:
+			continue
+		break
+
+# Given current location of robot, what is my observation
+def get_observation():
+	# Y = X + some gaussian noise
+	noises = np.random.multivariate_normal(SENSOR_MEAN, SENSOR_COVARIANCE, 1)
+	return np.array([ROBOT_POS[0] + noises[0,0], ROBOT_POS[1] + noises[0,1]])
+
+def particle_filter():
+	elapse_time_step("gaussian")
+	obs = get_observation()
+	weight_particles(obs)
+	resample()
 
 class Application(Canvas):
 	def create_widgets(self):
@@ -193,16 +296,23 @@ class Application(Canvas):
 		self.hi_there["command"] = self.say_hi
 
 		self.hi_there.pack({"side": "left"})
+	
+	def update_clock(self):
+		now = time.strftime("%H:%M:%S")
+		self.label.configure(text=now)
+		self.root.after(1000, self.update_clock)
+		move_robot()
+		self.update_robot()
+		particle_filter()
+		self.update_particles()
 
-	def add_robot(self):
-		x1, y1 = (ROBOT_INIT_POS[0] - PARTICLE_RADIUS), (ROBOT_INIT_POS[1] - PARTICLE_RADIUS)
-		x2, y2 = (ROBOT_INIT_POS[0] + PARTICLE_RADIUS), (ROBOT_INIT_POS[1] + PARTICLE_RADIUS)
+	def update_robot(self):
+		x1, y1 = (ROBOT_POS[0] - PARTICLE_RADIUS), (ROBOT_POS[1] - PARTICLE_RADIUS)
+		x2, y2 = (ROBOT_POS[0] + PARTICLE_RADIUS), (ROBOT_POS[1] + PARTICLE_RADIUS)
 		self.c.delete('robot')
 		self.c.create_oval(x1, y1, x2, y2, fill="red", tag='robot')
 
-	def add_particles(self):
-		# x1, y1 = (event.x - PARTICLE_RADIUS), (event.y - PARTICLE_RADIUS)
-		# x2, y2 = (event.x + PARTICLE_RADIUS), (event.y + PARTICLE_RADIUS)
+	def update_particles(self, event=None):
 		self.c.delete('particles')
 		for (idx, coord) in PARTICLE_LOCATION.iteritems():
 			x1, y1 = (coord[0] - PARTICLE_RADIUS), (coord[1] - PARTICLE_RADIUS)
@@ -221,14 +331,20 @@ class Application(Canvas):
 	def __init__(self, master=None):
 		self.c = Canvas(master, height=CANVAS_HEIGHT, width=CANVAS_WIDTH, bg='white')
 		self.c.pack()
-		self.add_particles()
-		self.add_robot()
+		self.root = master
+		self.label = Label(text="")
+		self.label.pack()
+		self.update_particles()
+		self.update_robot()
 		self.create_grid()
+		self.update_clock()
+		# self.c.bind('<Button-1>', self.update_particles)
 
 def main():
 	init_state("uniform")
 	init_transition_model("gaussian", covariance=None)
 	init_obs_given_state("gaussian", covariance=None)
+	print("Initialization complete")
 	root = Tk()
 	app = Application(master=root)
 	root.mainloop()
