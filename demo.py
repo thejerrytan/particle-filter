@@ -1,13 +1,31 @@
 from Tkinter import *
 
+# Particle filter algorithm - finding position of robot in a 2 dimensional space using noisy sensors
+# First we need to model the problem as Hidden Markov Model (HMM)
+# Notation: S - state space which can be discrete, continuous, defined on a range (smin, smax), t - time,
+#           X - probability distribution of state, Y - probability distribution of observations, y(t) - observation at time t 
+# 1) State space, X which produces a sequence of hidden (unobserved) state x(t) i.e. true location of the robot
+# 2) Transition model - P(x(t) | x(t-1)) i.e. what is the probability of robot being 1 step to the right at the next time step?
+# 3) Sequence of observations - readings Y(t) from noisy sensor and P(Y | X) - what is my sensor error?
+# What are we solving here, inference problem? P(X(t) | Y(t=0,1,2,3....t-1))
+#
+# SOLUTION
+# Elapse time step - compute P(X(t) | y(1:t-1)) i.e. what is my probability distribution of X given history of observations?
+#                    For every possible value of x in state space, P(x(t) | y(1:t-1)) = Summation over x(t-1) of P(x(t-1) | y(1:t-1)) * P(x(t) | x(t-1))
+# Note the recurrence relation here, answer for current time step is dependent on answer for previous time step, so we can use dynamic programming here.
+# 
+# Time complexity of elapse time step is |S|^2 because we have to perform the summation for every state to arrive at a distribution. 
+# Observe step - Compute P(X(t) | y(1:t))
+#                P(x(t) | y(1:t)) = P(x(t) | y(1:t-1)) * P(y(t) | x(t))
+# State space is CANVAS_WIDTH * CANVAS_HEIGHT
+
 CANVAS_WIDTH = 1200
-CANVAS_HEIGHT = 1200
+CANVAS_HEIGHT = 600
 PARTICLE_RADIUS = 2
+NUM_OF_PARTICLES = 40000
 
+def transition_model = 
 class Application(Canvas):
-    def say_hi(self):
-        print "hi there, everyone!"
-
     def create_widgets(self):
         self.QUIT = Button(self)
         self.QUIT["text"] = "QUIT"
