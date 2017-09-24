@@ -52,16 +52,17 @@ import random, time
 # Constants
 
 # State space is CANVAS_WIDTH * CANVAS_HEIGHT
-CANVAS_WIDTH = 80
-CANVAS_HEIGHT = 80
+CANVAS_WIDTH = 100
+CANVAS_HEIGHT = 100
 PARTICLE_RADIUS = 2
-NUM_OF_PARTICLES = 2000
+NUM_OF_PARTICLES = 1000
 ROBOT_RADIUS = 5
 ROBOT_POS = (CANVAS_HEIGHT/2, CANVAS_WIDTH/2)
 SAMPLE_SIZE = 50
-SENSOR_SIGMA = 2
+SENSOR_SIGMA = 10
 SENSOR_COVARIANCE = np.array([[SENSOR_SIGMA, 0], [0, SENSOR_SIGMA]])
-SENSOR_MEAN = np.array([0,0])
+ROBOT_SIGMA = 50
+SENSOR_MEAN = np.array([20,20])
 
 # Global data structures
 INIT_STATE_TABLE = None
@@ -101,7 +102,7 @@ def init_transition_model(model, **vargs):
 		TRANSITION_TABLE = np.zeros((CANVAS_HEIGHT, CANVAS_WIDTH, CANVAS_HEIGHT, CANVAS_WIDTH))
 		if cov is None:
 			# Default
-			cov = np.array([[5,0],[0,5]])
+			cov = np.array([[ROBOT_SIGMA,0],[0,ROBOT_SIGMA]])
 		coords_x, coords_y = np.mgrid[0:CANVAS_HEIGHT, 0:CANVAS_WIDTH]
 		coords = np.dstack((coords_x, coords_y))
 		for x in range(TRANSITION_TABLE.shape[0]):
@@ -132,7 +133,7 @@ def init_obs_given_state(distribution, **vargs):
 	if distribution == "random":
 		raise Exception("not implemented")
 	elif distribution == "gaussian":
-		# Typical scenario, sensor gives a reading +- some degree of accuracy. So Y = X + error, error ~ N(0, sigma)
+		# Typical scenario, sensor gives a reading +- some degree of accuracy. So Y = X + error, error ~ N(SENSOR_MEAN, SENSOR_COVARIANCE)
 		try:
 			cov = vargs["covariance"]
 		except KeyError:
@@ -149,7 +150,11 @@ def init_obs_given_state(distribution, **vargs):
 				# in the x direction, bounded by (0, CANVAS_WIDTH) in the y direction, with covariance matrix cov
 				# rescale by a, b
 				# Note this is a hack, this is not a truncated multivariate norm distribution. 
-				mean = np.array([x,y])
+				try:
+					mean = vargs["sensor_mean"]
+				except KeyError:
+					# print("sensor_mean is not given, using default")
+					mean = np.array([x + SENSOR_MEAN[0],y + SENSOR_MEAN[1]])
 				rv = stats.multivariate_normal(mean, cov)
 				OBS_ERROR_TABLE[x,y,:,:] = rv.pdf(coords)
 				norm = np.sum(OBS_ERROR_TABLE[x,y])
@@ -178,21 +183,8 @@ def elapse_time_step(distribution):
 		for (idx, coords) in PARTICLE_LOCATION.iteritems():
 			transition_model_given_x = TRANSITION_TABLE[coords[0], coords[1],:, :]
 			rand = random.random()
-			# Roulette wheel sampling using cumulative sum
-			# for x in range(0, transition_model_given_x.shape[0]):
-			# 	for y in range(0, transition_model_given_x.shape[1]):
-			# 		if rand < transition_model_given_x[x,y]:
-			# 			# update location of particle
-			# 			PARTICLE_LOCATION[idx] = np.array([x, y])
-			# 			break
-			# 	else:
-			# 		continue
-			# 	break
-			# else:
-			# 	continue
 			# Another method is compute sample from closed form, TODO
-			raw_idx = binSearch(transition_model_given_x.flatten(), rand)
-			print(raw_idx)
+			raw_idx = bin_search(transition_model_given_x.flatten(), rand, 0)
 			x = raw_idx // CANVAS_HEIGHT
 			y = raw_idx % CANVAS_WIDTH
 			PARTICLE_LOCATION[idx] = np.array([x,y])
@@ -225,12 +217,12 @@ def resample():
 	rand = random.random()
 	step_size = 1.0 / NUM_OF_PARTICLES
 	new_particles = [] # Stores index of particle selected
-	new_particles.append(binSearch(wheel, rand))
+	new_particles.append(bin_search(wheel, rand, 0))
 	while len(new_particles) < NUM_OF_PARTICLES: # Sampling with replacement
 		rand += step_size
 		if rand > 1:
 			rand %= 1
-		new_particles.append(binSearch(wheel, rand))
+		new_particles.append(bin_search(wheel, rand, 0))
 
 	global PARTICLE_LOCATION
 	temp_particle_location = {}
@@ -241,16 +233,16 @@ def resample():
 		count += 1
 	PARTICLE_LOCATION = temp_particle_location
 
-def binSearch(wheel, num):
+def bin_search(wheel, num, num_discarded_start_of_list):
 	if (len(wheel) == 1): return 1
 	mid = len(wheel)//2 - 1
 	try:
 		if wheel[mid] < num and num <= wheel[mid+1]:
-			return mid+1
+			return mid+1 + num_discarded_start_of_list
 		elif wheel[mid] >= num:
-			return binSearch(wheel[0:mid+1], num)
+			return bin_search(wheel[0:mid+1], num, num_discarded_start_of_list)
 		else:
-			return binSearch(wheel[mid+1:], num)
+			return bin_search(wheel[mid+1:], num, num_discarded_start_of_list + len(wheel[:mid+1]))
 	except Exception as e:
 		# pass
 		print(wheel, num)
@@ -273,8 +265,16 @@ def move_robot():
 # Given current location of robot, what is my observation
 def get_observation():
 	# Y = X + some gaussian noise
+	# This is not a truncated normal bounded by the canvas, thus there is non-zero
+	# probability extending to -inf, +inf in both dimensions, we need to account for that.
 	noises = np.random.multivariate_normal(SENSOR_MEAN, SENSOR_COVARIANCE, 1)
-	return np.array([ROBOT_POS[0] + noises[0,0], ROBOT_POS[1] + noises[0,1]])
+	new_x = ROBOT_POS[0] + noises[0,0]
+	new_y = ROBOT_POS[1] + noises[0,1]
+	new_x = min(new_x, CANVAS_WIDTH-1)
+	new_x = max(new_x, 0)
+	new_y = min(new_y, CANVAS_HEIGHT-1)
+	new_y = max(new_y, 0)
+	return np.array([new_x, new_y])
 
 def particle_filter():
 	elapse_time_step("gaussian")
@@ -300,7 +300,7 @@ class Application(Canvas):
 	def update_clock(self):
 		now = time.strftime("%H:%M:%S")
 		self.label.configure(text=now)
-		self.root.after(1000, self.update_clock)
+		self.root.after(100, self.update_clock)
 		move_robot()
 		self.update_robot()
 		particle_filter()
@@ -329,6 +329,7 @@ class Application(Canvas):
 			self.c.create_line([(0,i), (width,i)], tag='grid_line')
 
 	def __init__(self, master=None):
+		self.update_count = 0
 		self.c = Canvas(master, height=CANVAS_HEIGHT, width=CANVAS_WIDTH, bg='white')
 		self.c.pack()
 		self.root = master
