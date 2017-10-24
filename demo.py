@@ -52,9 +52,9 @@ import random, time
 # Constants
 
 # State space is CANVAS_WIDTH * CANVAS_HEIGHT
-CANVAS_WIDTH = 100
-CANVAS_HEIGHT = 100
-PARTICLE_RADIUS = 2
+CANVAS_WIDTH = 400
+CANVAS_HEIGHT = 400
+PARTICLE_RADIUS = 3
 NUM_OF_PARTICLES = 1000
 ROBOT_RADIUS = 5
 ROBOT_POS = (CANVAS_HEIGHT/2, CANVAS_WIDTH/2)
@@ -72,6 +72,8 @@ PARTICLE_LOCATION = {}
 PARTICLE_WEIGHT = {}
 
 ERROR_TOLERANCE = 0.00001
+UPDATE_INTERVAL = 400
+PARTICLE_DELAY = 400
 
 # Initialize prior state distribution, distribution = ["uniform", "gaussian"]
 def init_state(distribution, **vargs):
@@ -99,27 +101,25 @@ def init_transition_model(model, **vargs):
 			cov = vargs["covariance"]
 		except KeyError:
 			raise Exception("Please specify covariance matrix (standard deviation)")
-		TRANSITION_TABLE = np.zeros((CANVAS_HEIGHT, CANVAS_WIDTH, CANVAS_HEIGHT, CANVAS_WIDTH))
+		TRANSITION_TABLE = np.zeros((2 * CANVAS_HEIGHT, 2 * CANVAS_WIDTH))
 		if cov is None:
 			# Default
 			cov = np.array([[ROBOT_SIGMA,0],[0,ROBOT_SIGMA]])
-		coords_x, coords_y = np.mgrid[0:CANVAS_HEIGHT, 0:CANVAS_WIDTH]
+		coords_x, coords_y = np.mgrid[0:2 * CANVAS_HEIGHT, 0:2 * CANVAS_WIDTH]
 		coords = np.dstack((coords_x, coords_y))
-		for x in range(TRANSITION_TABLE.shape[0]):
-			for y in range(TRANSITION_TABLE.shape[1]):
-				# Generate a multivariate truncated gaussian with mean (x,y) and bounded by (0,CANVAS_HEIGHT) 
-				# in the x direction, bounded by (0, CANVAS_WIDTH) in the y direction, with covariance matrix cov
-				# rescale by a, b
-				# Note this is a hack, this is not a truncated multivariate norm distribution. 
-				mean = np.array([x,y])
-				rv = stats.multivariate_normal(mean, cov)
-				TRANSITION_TABLE[x,y,:,:] = rv.pdf(coords)
-				norm = np.sum(TRANSITION_TABLE[x,y])
-				TRANSITION_TABLE[x,y] /= norm
-				TRANSITION_TABLE[x,y] = np.cumsum(TRANSITION_TABLE[x,y]).reshape((CANVAS_HEIGHT, CANVAS_WIDTH))
-				# plt.contourf(coords_x, coords_y, rv.pdf(coords))
-				# plt.show()
-				# assert(abs(np.sum(TRANSITION_TABLE[x,y]) - 1.0) < ERROR_TOLERANCE)
+		# Generate a multivariate truncated gaussian with mean (x,y) and bounded by (0,CANVAS_HEIGHT) 
+		# in the x direction, bounded by (0, CANVAS_WIDTH) in the y direction, with covariance matrix cov
+		# rescale by a, b
+		# Note this is a hack, this is not a truncated multivariate norm distribution. 
+		mean = np.array([CANVAS_HEIGHT, CANVAS_WIDTH])
+		rv = stats.multivariate_normal(mean, cov)
+		TRANSITION_TABLE[:,:] = rv.pdf(coords)
+		norm = np.sum(TRANSITION_TABLE)
+		TRANSITION_TABLE /= norm
+		TRANSITION_TABLE = np.cumsum(TRANSITION_TABLE).reshape((2 * CANVAS_HEIGHT, 2 * CANVAS_WIDTH))
+		# plt.contourf(coords_x, coords_y, rv.pdf(coords))
+		# plt.show()
+		# assert(abs(np.sum(TRANSITION_TABLE) - 1.0) < ERROR_TOLERANCE)
 	elif model == "gaussian-with-drift":
 		raise Exception("Not implemented")
 	elif model == "stationary":
@@ -138,30 +138,28 @@ def init_obs_given_state(distribution, **vargs):
 			cov = vargs["covariance"]
 		except KeyError:
 			raise Exception("Please specify covariance matrix (standard deviation)")
-		OBS_ERROR_TABLE = np.zeros((CANVAS_HEIGHT, CANVAS_WIDTH, CANVAS_HEIGHT, CANVAS_WIDTH))
+		OBS_ERROR_TABLE = np.zeros((2 * CANVAS_HEIGHT, 2 * CANVAS_WIDTH))
 		if cov is None:
 			# Default
 			cov = np.array([[SENSOR_SIGMA,0],[0,SENSOR_SIGMA]])
-		coords_x, coords_y = np.mgrid[0:CANVAS_HEIGHT, 0:CANVAS_WIDTH]
+		coords_x, coords_y = np.mgrid[0:2 * CANVAS_HEIGHT, 0:2 * CANVAS_WIDTH]
 		coords = np.dstack((coords_x, coords_y))
-		for x in range(OBS_ERROR_TABLE.shape[0]):
-			for y in range(OBS_ERROR_TABLE.shape[1]):
-				# Generate a multivariate truncated gaussian with mean (x,y) and bounded by (0,CANVAS_HEIGHT) 
-				# in the x direction, bounded by (0, CANVAS_WIDTH) in the y direction, with covariance matrix cov
-				# rescale by a, b
-				# Note this is a hack, this is not a truncated multivariate norm distribution. 
-				try:
-					mean = vargs["sensor_mean"]
-				except KeyError:
-					# print("sensor_mean is not given, using default")
-					mean = np.array([x + SENSOR_MEAN[0],y + SENSOR_MEAN[1]])
-				rv = stats.multivariate_normal(mean, cov)
-				OBS_ERROR_TABLE[x,y,:,:] = rv.pdf(coords)
-				norm = np.sum(OBS_ERROR_TABLE[x,y])
-				OBS_ERROR_TABLE[x,y] /= norm
-				# plt.contourf(coords_x, coords_y, rv.pdf(coords))
-				# plt.show()
-				assert(abs(np.sum(OBS_ERROR_TABLE[x,y]) - 1.0) < ERROR_TOLERANCE)
+		# Generate a multivariate truncated gaussian with mean (x,y) and bounded by (0,2*CANVAS_HEIGHT) 
+		# in the x direction, bounded by (0, 2*CANVAS_WIDTH) in the y direction, with covariance matrix cov
+		# rescale by a, b
+		# Note this is a hack, this is not a truncated multivariate norm distribution. 
+		try:
+			mean = vargs["sensor_mean"]
+		except KeyError:
+			# print("sensor_mean is not given, using default")
+			mean = np.array([CANVAS_WIDTH + SENSOR_MEAN[0], CANVAS_HEIGHT + SENSOR_MEAN[1]])
+		rv = stats.multivariate_normal(mean, cov)
+		OBS_ERROR_TABLE[:,:] = rv.pdf(coords)
+		norm = np.sum(OBS_ERROR_TABLE)
+		OBS_ERROR_TABLE /= norm
+		# plt.contourf(coords_x, coords_y, rv.pdf(coords))
+		# plt.show()
+		assert(abs(np.sum(OBS_ERROR_TABLE) - 1.0) < ERROR_TOLERANCE)
 	else:
 		raise Exception("Invalid model - use one of random, gaussian")
 	pass
@@ -181,13 +179,16 @@ def elapse_time_step(distribution):
 	global PARTICLE_LOCATION
 	if distribution == "gaussian":
 		for (idx, coords) in PARTICLE_LOCATION.iteritems():
-			transition_model_given_x = TRANSITION_TABLE[coords[0], coords[1],:, :]
+			transition_model_given_x = get_transition_table_slice(TRANSITION_TABLE, coords).flatten()
 			rand = random.random()
 			# Another method is compute sample from closed form, TODO
-			raw_idx = bin_search(transition_model_given_x.flatten(), rand, 0)
+			raw_idx = bin_search(transition_model_given_x, 0, transition_model_given_x.size-1, rand, 0)
 			x = raw_idx // CANVAS_HEIGHT
 			y = raw_idx % CANVAS_WIDTH
-			PARTICLE_LOCATION[idx] = np.array([x,y])
+			# start = time.time()
+			PARTICLE_LOCATION[idx] = [x,y]
+			# end = time.time()
+			# print(str((end - start) * 1000) + " ms")
 
 # Observation is np.array([x,y])
 def weight_particles(observation):
@@ -196,7 +197,8 @@ def weight_particles(observation):
 	for (idx, location) in PARTICLE_LOCATION.iteritems():
 		actual_x = location[0]
 		actual_y = location[1]
-		prob = OBS_ERROR_TABLE[actual_x, actual_y, observation[0], observation[1]]
+		obs_error_table_slice = get_transition_table_slice(OBS_ERROR_TABLE, location)
+		prob = obs_error_table_slice[observation[0], observation[1]]
 		total += prob
 		PARTICLE_WEIGHT[idx] *= prob
 	# Normalize so sum of weights = 1
@@ -217,12 +219,12 @@ def resample():
 	rand = random.random()
 	step_size = 1.0 / NUM_OF_PARTICLES
 	new_particles = [] # Stores index of particle selected
-	new_particles.append(bin_search(wheel, rand, 0))
+	new_particles.append(bin_search(wheel, 0, len(wheel)-1, rand, 0))
 	while len(new_particles) < NUM_OF_PARTICLES: # Sampling with replacement
 		rand += step_size
 		if rand > 1:
 			rand %= 1
-		new_particles.append(bin_search(wheel, rand, 0))
+		new_particles.append(bin_search(wheel, 0, len(wheel)-1, rand, 0))
 
 	global PARTICLE_LOCATION
 	temp_particle_location = {}
@@ -233,16 +235,24 @@ def resample():
 		count += 1
 	PARTICLE_LOCATION = temp_particle_location
 
-def bin_search(wheel, num, num_discarded_start_of_list):
-	if (len(wheel) == 1): return 1
-	mid = len(wheel)//2 - 1
+# Binary search for floats
+def bin_search(wheel, start, end, num, num_discarded_start_of_list):
+	if (end - start <= 0): return 1
+	mid = (end - start)//2 + start
 	try:
 		if wheel[mid] < num and num <= wheel[mid+1]:
-			return mid+1 + num_discarded_start_of_list
+			return mid - start + num_discarded_start_of_list + 1
+		elif (end - start + 1) == 2:
+			if num <= wheel[mid]:
+				return 1
+			elif wheel[end] > num:
+				return end
+			else:
+				return end # Don't know what else to return
 		elif wheel[mid] >= num:
-			return bin_search(wheel[0:mid+1], num, num_discarded_start_of_list)
+			return bin_search(wheel, start, mid, num, num_discarded_start_of_list)
 		else:
-			return bin_search(wheel[mid+1:], num, num_discarded_start_of_list + len(wheel[:mid+1]))
+			return bin_search(wheel, mid+1, end, num, num_discarded_start_of_list + (mid - start + 1))
 	except Exception as e:
 		# pass
 		print(wheel, num)
@@ -250,7 +260,7 @@ def bin_search(wheel, num, num_discarded_start_of_list):
 # Moves robot according to predefined motion dynamics
 def move_robot():
 	global ROBOT_POS
-	transition_model_given_x = TRANSITION_TABLE[ROBOT_POS[0], ROBOT_POS[1],:, :]
+	transition_model_given_x = get_transition_table_slice(TRANSITION_TABLE, ROBOT_POS)
 	rand = random.random()
 	for x in range(0, transition_model_given_x.shape[0]):
 		for y in range(0, transition_model_given_x.shape[1]):
@@ -262,49 +272,44 @@ def move_robot():
 			continue
 		break
 
+def get_transition_table_slice(tbl, position):
+	start_x = CANVAS_WIDTH - position[0]
+	end_x   = CANVAS_WIDTH + (CANVAS_WIDTH - position[0])
+	start_y = CANVAS_HEIGHT - position[1]
+	end_y   = CANVAS_HEIGHT + (CANVAS_HEIGHT - position[1])
+	return tbl[start_x:end_x, start_y:end_y]
+
 # Given current location of robot, what is my observation
 def get_observation():
 	# Y = X + some gaussian noise
 	# This is not a truncated normal bounded by the canvas, thus there is non-zero
 	# probability extending to -inf, +inf in both dimensions, we need to account for that.
 	noises = np.random.multivariate_normal(SENSOR_MEAN, SENSOR_COVARIANCE, 1)
-	new_x = ROBOT_POS[0] + noises[0,0]
-	new_y = ROBOT_POS[1] + noises[0,1]
+	new_x = ROBOT_POS[0] + int(round(noises[0,0]))
+	new_y = ROBOT_POS[1] + int(round(noises[0,1]))
 	new_x = min(new_x, CANVAS_WIDTH-1)
 	new_x = max(new_x, 0)
 	new_y = min(new_y, CANVAS_HEIGHT-1)
 	new_y = max(new_y, 0)
-	return np.array([new_x, new_y])
+	return [new_x, new_y]
 
 def particle_filter():
+	start = time.time()
 	elapse_time_step("gaussian")
 	obs = get_observation()
 	weight_particles(obs)
 	resample()
+	end = time.time()
+	print(str((end - start) * 1000) + " ms")
 
 class Application(Canvas):
-	def create_widgets(self):
-		self.QUIT = Button(self)
-		self.QUIT["text"] = "QUIT"
-		self.QUIT["fg"]   = "red"
-		self.QUIT["command"] =  self.quit
-
-		self.QUIT.pack({"side": "left"})
-
-		self.hi_there = Button(self)
-		self.hi_there["text"] = "Hello",
-		self.hi_there["command"] = self.say_hi
-
-		self.hi_there.pack({"side": "left"})
-	
 	def update_clock(self):
 		now = time.strftime("%H:%M:%S")
 		self.label.configure(text=now)
-		self.root.after(100, self.update_clock)
+		self.root.after(UPDATE_INTERVAL, self.update_clock)
 		move_robot()
 		self.update_robot()
 		particle_filter()
-		self.update_particles()
 
 	def update_robot(self):
 		x1, y1 = (ROBOT_POS[0] - PARTICLE_RADIUS), (ROBOT_POS[1] - PARTICLE_RADIUS)
@@ -318,6 +323,7 @@ class Application(Canvas):
 			x1, y1 = (coord[0] - PARTICLE_RADIUS), (coord[1] - PARTICLE_RADIUS)
 			x2, y2 = (coord[0] + PARTICLE_RADIUS), (coord[1] + PARTICLE_RADIUS)
 			self.c.create_oval(x1, y1, x2, y2, fill="green", tag='particles')
+		self.root.after(UPDATE_INTERVAL, self.update_particles)
 
 	def create_grid(self):
 		width = self.c.winfo_width()
@@ -339,6 +345,8 @@ class Application(Canvas):
 		self.update_robot()
 		self.create_grid()
 		self.update_clock()
+		time.sleep(PARTICLE_DELAY / 1000.0)
+		self.update_particles()
 		# self.c.bind('<Button-1>', self.update_particles)
 
 def main():
